@@ -1,0 +1,6 @@
+# Ashita saves per-character settings outside the addon folder,
+# but ignore any stray copies just in case.
+settings/
+*.bak
+Thumbs.db
+.DS_Store
