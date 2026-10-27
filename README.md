@@ -8,6 +8,10 @@ An Ashita v4 addon for HorizonXI that shows how much time is left on the buffs *
 
 > Code written with Claude (AI) at my direction. I tested it in game and maintain it.
 
+> [!WARNING]
+> **Not currently approved on HorizonXI.** It has been sent to HorizonXI staff for review.
+> Do not use it on HorizonXI until it shows on the approved addon list. Using unapproved addons can get your account banned.
+
 ## What it shows
 
 **Buff box**
