@@ -24,7 +24,7 @@
 ----------------------------------------------------------------------
 addon.name    = 'personalbuffs'
 addon.author  = 'Renavi'
-addon.version = '1.0'
+addon.version = '1.1'
 addon.desc    = 'Shows time left on buffs you give to yourself and others.'
 addon.link    = 'https://github.com/RenaviOnEden/personalbuffs'
 
@@ -41,6 +41,11 @@ local defaults = T{
     x            = 250,     -- window position
     y            = 650,
     fallback     = 120,     -- seconds, used when nothing else is known
+    theme        = 'Default', -- color theme (see THEMES)
+    customThemes = T{},     -- your saved looks: { name, base theme, style, opacity }
+    recastLabels = true,    -- "Abilities" / "Spells" labels in the recast box
+    style        = T{},     -- your own style tweaks on top of the theme (see THEMES)
+    opacity      = 0,       -- background opacity in % (10-100); 0 = use the theme's own
     durations    = T{},     -- [buff|gear] = real full time read from your own buff
     hidden       = T{},     -- [buff name]  = true when switched off
     hiddenGroups = T{},     -- [group name] = true when switched off
@@ -59,6 +64,8 @@ local defaults = T{
         enabled   = false,  -- main on / off switch
         hidden    = T{},    -- [caster name] = true when you've turned that person off
         known     = T{},    -- [caster name] = true (people seen, for the menu)
+        gear      = T{},    -- [caster name] = { [item] = true } set by you in the Party tab
+                            -- (their gear can't be seen, so you tell the addon)
     },
 
     -- Gear that adds time to buffs. Only used when the real time
@@ -86,11 +93,22 @@ local function fill_missing(cfg, def)
         end
     end
 end
+-- Older settings had one "rounding" value; it now lives in your style tweaks.
+local function migrate(cfg)
+    if cfg.rounding ~= nil then
+        if tonumber(cfg.rounding) ~= 6 and cfg.style.rounding == nil then
+            cfg.style.rounding = tonumber(cfg.rounding)
+        end
+        cfg.rounding = nil
+    end
+end
 fill_missing(config, defaults)
+migrate(config)
 
 settings.register('settings', 'pb_settings', function (s)
     if s ~= nil then config = s end
     fill_missing(config, defaults)
+    migrate(config)
 end)
 
 ----------------------------------------------------------------------
@@ -103,6 +121,349 @@ local COL_RED    = { 0.82, 0.45, 0.45, 1.0 }
 local COL_TARGET = { 0.60, 0.72, 0.86, 1.0 }   -- soft blue for names
 local COL_BG     = { 0.05, 0.05, 0.08, 0.70 }
 local COL_BORDER = { 0.35, 0.35, 0.40, 0.80 }
+local COL_BTN     = { 0.18, 0.20, 0.26, 0.90 }   -- menu buttons
+local COL_BTN_SEL = { 0.28, 0.38, 0.30, 0.95 }   -- selected menu button
+
+local COL_ACCENT  = { 0.60, 0.72, 0.86, 1.00 }   -- headers, side stripe
+local currentTheme = nil                          -- theme in use (set by apply_theme)
+
+----------------------------------------------------------------------
+-- Themes. "Default" is the original look. Picking a theme copies its
+-- colors into the COL_ tables above, so everything else just works.
+--
+-- style (anything left out uses DEFAULT_STYLE):
+--   bars      timer bar under each row            true / false
+--   barH      bar height in pixels                2 - 8
+--   header    title strip at the top of each box  true / false
+--   border    'none', 'thin', 'thick', 'double'
+--   stripe    colored stripe down the left side   0 (off) - 6 px
+--   dividers  lines between groups (instead of a gap)
+--   spacing   'compact', 'normal', 'roomy'
+--   scale     text size in %                      80 - 130
+--   rounding  corner roundness                    0 - 12
+----------------------------------------------------------------------
+local DEFAULT_STYLE = { bars = false, barH = 3, header = false, border = 'thin', stripe = 0,
+                        dividers = false, spacing = 'normal', scale = 100, rounding = 6 }
+
+local THEMES = {
+    { name = 'Default', desc = 'The original look.',
+      NAME = { 0.88, 0.88, 0.88, 1.0 }, GREEN = { 0.55, 0.80, 0.55, 1.0 },
+      YELLOW = { 0.85, 0.78, 0.45, 1.0 }, RED = { 0.82, 0.45, 0.45, 1.0 },
+      TARGET = { 0.60, 0.72, 0.86, 1.0 }, BG = { 0.05, 0.05, 0.08, 0.70 },
+      BORDER = { 0.35, 0.35, 0.40, 0.80 }, BTN = { 0.18, 0.20, 0.26, 0.90 },
+      BTN_SEL = { 0.28, 0.38, 0.30, 0.95 }, ACCENT = { 0.60, 0.72, 0.86, 1.0 },
+      style = {} },
+    { name = 'Classic', desc = 'Blue with a double border, like the game menus.',
+      NAME = { 0.95, 0.95, 0.95, 1.0 }, GREEN = { 0.55, 0.90, 0.55, 1.0 },
+      YELLOW = { 0.95, 0.85, 0.40, 1.0 }, RED = { 0.95, 0.45, 0.45, 1.0 },
+      TARGET = { 0.70, 0.85, 1.00, 1.0 }, BG = { 0.05, 0.10, 0.32, 0.85 },
+      BORDER = { 0.75, 0.75, 0.85, 0.90 }, BTN = { 0.12, 0.20, 0.45, 0.90 },
+      BTN_SEL = { 0.25, 0.35, 0.65, 0.95 }, ACCENT = { 0.85, 0.88, 1.00, 1.0 },
+      style = { border = 'double', header = true, rounding = 4 } },
+    { name = 'Minimal', desc = 'See-through, no border, thin bars.',
+      NAME = { 0.90, 0.90, 0.90, 1.0 }, GREEN = { 0.60, 0.85, 0.60, 1.0 },
+      YELLOW = { 0.90, 0.82, 0.45, 1.0 }, RED = { 0.90, 0.48, 0.48, 1.0 },
+      TARGET = { 0.70, 0.78, 0.88, 1.0 }, BG = { 0.00, 0.00, 0.00, 0.30 },
+      BORDER = { 0.50, 0.50, 0.50, 0.00 }, BTN = { 0.20, 0.20, 0.20, 0.80 },
+      BTN_SEL = { 0.30, 0.40, 0.30, 0.90 }, ACCENT = { 0.80, 0.80, 0.80, 1.0 },
+      style = { border = 'none', bars = true, barH = 2, spacing = 'compact', rounding = 4 } },
+    { name = 'Midnight', desc = 'Dark and solid, with a side stripe.',
+      NAME = { 0.80, 0.80, 0.82, 1.0 }, GREEN = { 0.45, 0.72, 0.55, 1.0 },
+      YELLOW = { 0.80, 0.70, 0.40, 1.0 }, RED = { 0.78, 0.38, 0.40, 1.0 },
+      TARGET = { 0.55, 0.62, 0.80, 1.0 }, BG = { 0.01, 0.01, 0.02, 0.92 },
+      BORDER = { 0.20, 0.20, 0.25, 0.90 }, BTN = { 0.10, 0.10, 0.14, 0.95 },
+      BTN_SEL = { 0.20, 0.26, 0.22, 0.95 }, ACCENT = { 0.45, 0.50, 0.95, 1.0 },
+      style = { border = 'none', stripe = 3, bars = true, barH = 2, spacing = 'compact' } },
+    { name = 'Glass', desc = 'Frosted, very round, with headers and bars.',
+      NAME = { 0.95, 0.97, 1.00, 1.0 }, GREEN = { 0.60, 0.92, 0.70, 1.0 },
+      YELLOW = { 0.98, 0.88, 0.50, 1.0 }, RED = { 0.98, 0.55, 0.55, 1.0 },
+      TARGET = { 0.70, 0.85, 1.00, 1.0 }, BG = { 0.16, 0.20, 0.28, 0.45 },
+      BORDER = { 0.85, 0.90, 1.00, 0.35 }, BTN = { 0.25, 0.30, 0.40, 0.60 },
+      BTN_SEL = { 0.35, 0.50, 0.65, 0.80 }, ACCENT = { 0.75, 0.88, 1.00, 1.0 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Rose', desc = 'Frosted pink glass.',
+      NAME = { 1.00, 0.95, 0.97, 1.00 }, GREEN = { 0.65, 0.92, 0.72, 1.00 },
+      YELLOW = { 0.98, 0.86, 0.55, 1.00 }, RED = { 1.00, 0.55, 0.62, 1.00 },
+      TARGET = { 1.00, 0.78, 0.88, 1.00 }, BG = { 0.30, 0.14, 0.22, 0.45 },
+      BORDER = { 1.00, 0.80, 0.90, 0.35 }, BTN = { 0.40, 0.20, 0.30, 0.60 },
+      BTN_SEL = { 0.60, 0.30, 0.45, 0.80 }, ACCENT = { 1.00, 0.70, 0.85, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Mint', desc = 'Frosted mint-green glass.',
+      NAME = { 0.94, 1.00, 0.97, 1.00 }, GREEN = { 0.55, 0.95, 0.75, 1.00 },
+      YELLOW = { 0.95, 0.90, 0.55, 1.00 }, RED = { 0.98, 0.55, 0.55, 1.00 },
+      TARGET = { 0.65, 0.98, 0.88, 1.00 }, BG = { 0.10, 0.24, 0.20, 0.45 },
+      BORDER = { 0.75, 1.00, 0.90, 0.35 }, BTN = { 0.15, 0.32, 0.27, 0.60 },
+      BTN_SEL = { 0.22, 0.50, 0.40, 0.80 }, ACCENT = { 0.55, 1.00, 0.85, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Amber', desc = 'Frosted warm gold glass.',
+      NAME = { 1.00, 0.97, 0.90, 1.00 }, GREEN = { 0.70, 0.92, 0.60, 1.00 },
+      YELLOW = { 1.00, 0.85, 0.45, 1.00 }, RED = { 1.00, 0.55, 0.45, 1.00 },
+      TARGET = { 1.00, 0.85, 0.60, 1.00 }, BG = { 0.28, 0.20, 0.08, 0.45 },
+      BORDER = { 1.00, 0.88, 0.60, 0.35 }, BTN = { 0.38, 0.27, 0.10, 0.60 },
+      BTN_SEL = { 0.58, 0.42, 0.15, 0.80 }, ACCENT = { 1.00, 0.80, 0.40, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Violet', desc = 'Frosted purple glass.',
+      NAME = { 0.97, 0.95, 1.00, 1.00 }, GREEN = { 0.62, 0.92, 0.78, 1.00 },
+      YELLOW = { 0.98, 0.88, 0.58, 1.00 }, RED = { 1.00, 0.55, 0.68, 1.00 },
+      TARGET = { 0.82, 0.75, 1.00, 1.00 }, BG = { 0.20, 0.14, 0.32, 0.45 },
+      BORDER = { 0.88, 0.80, 1.00, 0.35 }, BTN = { 0.28, 0.20, 0.45, 0.60 },
+      BTN_SEL = { 0.42, 0.32, 0.68, 0.80 }, ACCENT = { 0.80, 0.68, 1.00, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Ocean', desc = 'Frosted deep teal glass, side stripe.',
+      NAME = { 0.93, 0.98, 1.00, 1.00 }, GREEN = { 0.55, 0.92, 0.80, 1.00 },
+      YELLOW = { 0.95, 0.88, 0.55, 1.00 }, RED = { 0.98, 0.55, 0.58, 1.00 },
+      TARGET = { 0.60, 0.88, 1.00, 1.00 }, BG = { 0.05, 0.18, 0.26, 0.48 },
+      BORDER = { 0.65, 0.90, 1.00, 0.35 }, BTN = { 0.08, 0.26, 0.36, 0.60 },
+      BTN_SEL = { 0.12, 0.40, 0.55, 0.80 }, ACCENT = { 0.40, 0.85, 1.00, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3, stripe = 3 } },
+    { name = 'Glass Smoke', desc = 'Dark smoky glass, no tint.',
+      NAME = { 0.94, 0.94, 0.96, 1.00 }, GREEN = { 0.60, 0.88, 0.68, 1.00 },
+      YELLOW = { 0.95, 0.86, 0.52, 1.00 }, RED = { 0.96, 0.55, 0.55, 1.00 },
+      TARGET = { 0.80, 0.84, 0.90, 1.00 }, BG = { 0.08, 0.08, 0.10, 0.50 },
+      BORDER = { 0.90, 0.90, 0.95, 0.25 }, BTN = { 0.18, 0.18, 0.22, 0.60 },
+      BTN_SEL = { 0.30, 0.32, 0.38, 0.80 }, ACCENT = { 0.85, 0.88, 0.95, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Glass Frost', desc = 'Very light, icy glass.',
+      NAME = { 1.00, 1.00, 1.00, 1.00 }, GREEN = { 0.62, 0.95, 0.75, 1.00 },
+      YELLOW = { 1.00, 0.90, 0.55, 1.00 }, RED = { 1.00, 0.58, 0.58, 1.00 },
+      TARGET = { 0.80, 0.92, 1.00, 1.00 }, BG = { 0.40, 0.48, 0.58, 0.38 },
+      BORDER = { 1.00, 1.00, 1.00, 0.50 }, BTN = { 0.45, 0.52, 0.62, 0.60 },
+      BTN_SEL = { 0.55, 0.68, 0.82, 0.80 }, ACCENT = { 0.90, 0.97, 1.00, 1.00 },
+      style = { rounding = 10, header = true, bars = true, barH = 3 } },
+    { name = 'Crystal', desc = 'Purple and cyan, stripe, headers, bars.',
+      NAME = { 0.92, 0.90, 0.98, 1.0 }, GREEN = { 0.50, 0.90, 0.85, 1.0 },
+      YELLOW = { 0.95, 0.85, 0.55, 1.0 }, RED = { 0.95, 0.50, 0.65, 1.0 },
+      TARGET = { 0.55, 0.85, 0.95, 1.0 }, BG = { 0.12, 0.06, 0.22, 0.85 },
+      BORDER = { 0.55, 0.40, 0.85, 0.90 }, BTN = { 0.22, 0.12, 0.38, 0.90 },
+      BTN_SEL = { 0.30, 0.45, 0.60, 0.95 }, ACCENT = { 0.45, 0.90, 0.95, 1.0 },
+      style = { stripe = 3, header = true, bars = true, barH = 3, rounding = 8, dividers = true } },
+    { name = 'Ember', desc = 'Charcoal and orange, thick bars.',
+      NAME = { 0.95, 0.88, 0.80, 1.0 }, GREEN = { 0.70, 0.85, 0.45, 1.0 },
+      YELLOW = { 0.98, 0.75, 0.30, 1.0 }, RED = { 0.98, 0.40, 0.25, 1.0 },
+      TARGET = { 0.98, 0.70, 0.45, 1.0 }, BG = { 0.10, 0.06, 0.04, 0.88 },
+      BORDER = { 0.55, 0.30, 0.12, 0.90 }, BTN = { 0.25, 0.12, 0.06, 0.90 },
+      BTN_SEL = { 0.50, 0.25, 0.08, 0.95 }, ACCENT = { 0.98, 0.55, 0.15, 1.0 },
+      style = { stripe = 4, bars = true, barH = 4, rounding = 5, border = 'none' } },
+    { name = 'Terminal', desc = 'Green on black, square, compact.',
+      NAME = { 0.30, 0.95, 0.40, 1.0 }, GREEN = { 0.30, 0.95, 0.40, 1.0 },
+      YELLOW = { 0.85, 0.95, 0.30, 1.0 }, RED = { 0.95, 0.45, 0.30, 1.0 },
+      TARGET = { 0.55, 1.00, 0.60, 1.0 }, BG = { 0.00, 0.03, 0.00, 0.90 },
+      BORDER = { 0.20, 0.80, 0.30, 0.90 }, BTN = { 0.02, 0.15, 0.04, 0.95 },
+      BTN_SEL = { 0.05, 0.35, 0.10, 0.95 }, ACCENT = { 0.30, 0.95, 0.40, 1.0 },
+      style = { rounding = 0, header = true, dividers = true, spacing = 'compact' } },
+    { name = 'High Contrast', desc = 'Easiest to read: big text, thick border, bars.',
+      NAME = { 1.00, 1.00, 1.00, 1.0 }, GREEN = { 0.30, 1.00, 0.30, 1.0 },
+      YELLOW = { 1.00, 0.90, 0.10, 1.0 }, RED = { 1.00, 0.30, 0.30, 1.0 },
+      TARGET = { 0.40, 0.80, 1.00, 1.0 }, BG = { 0.00, 0.00, 0.00, 0.95 },
+      BORDER = { 1.00, 1.00, 1.00, 1.00 }, BTN = { 0.15, 0.15, 0.15, 1.00 },
+      BTN_SEL = { 0.10, 0.45, 0.10, 1.00 }, ACCENT = { 1.00, 0.90, 0.10, 1.0 },
+      style = { border = 'thick', header = true, bars = true, barH = 5, spacing = 'roomy',
+                scale = 115, rounding = 2 } },
+    { name = "San d'Oria", desc = 'Red and gold, double border, headers.',
+      NAME = { 0.95, 0.90, 0.85, 1.0 }, GREEN = { 0.60, 0.82, 0.55, 1.0 },
+      YELLOW = { 0.95, 0.80, 0.40, 1.0 }, RED = { 0.95, 0.45, 0.40, 1.0 },
+      TARGET = { 0.95, 0.78, 0.50, 1.0 }, BG = { 0.22, 0.04, 0.06, 0.82 },
+      BORDER = { 0.75, 0.60, 0.30, 0.90 }, BTN = { 0.35, 0.08, 0.10, 0.90 },
+      BTN_SEL = { 0.55, 0.15, 0.15, 0.95 }, ACCENT = { 0.90, 0.72, 0.35, 1.0 },
+      style = { border = 'double', header = true, dividers = true, rounding = 3 } },
+    { name = 'Bastok', desc = 'Steel, square, thick border, stripe and bars.',
+      NAME = { 0.90, 0.90, 0.92, 1.0 }, GREEN = { 0.55, 0.80, 0.60, 1.0 },
+      YELLOW = { 0.88, 0.76, 0.42, 1.0 }, RED = { 0.85, 0.45, 0.42, 1.0 },
+      TARGET = { 0.62, 0.78, 0.92, 1.0 }, BG = { 0.10, 0.12, 0.16, 0.85 },
+      BORDER = { 0.55, 0.60, 0.68, 0.90 }, BTN = { 0.20, 0.25, 0.32, 0.90 },
+      BTN_SEL = { 0.30, 0.42, 0.55, 0.95 }, ACCENT = { 0.55, 0.75, 0.95, 1.0 },
+      style = { border = 'thick', stripe = 4, dividers = true, bars = true, barH = 3, rounding = 0 } },
+    { name = 'Windurst', desc = 'Green and earth, very round and roomy.',
+      NAME = { 0.92, 0.92, 0.85, 1.0 }, GREEN = { 0.60, 0.88, 0.50, 1.0 },
+      YELLOW = { 0.92, 0.82, 0.45, 1.0 }, RED = { 0.88, 0.48, 0.42, 1.0 },
+      TARGET = { 0.75, 0.88, 0.60, 1.0 }, BG = { 0.06, 0.14, 0.07, 0.82 },
+      BORDER = { 0.55, 0.65, 0.35, 0.90 }, BTN = { 0.14, 0.26, 0.14, 0.90 },
+      BTN_SEL = { 0.25, 0.42, 0.22, 0.95 }, ACCENT = { 0.70, 0.90, 0.45, 1.0 },
+      style = { header = true, bars = true, barH = 4, spacing = 'roomy', rounding = 12 } },
+}
+
+local THEME_COLS = { NAME = COL_NAME, GREEN = COL_GREEN, YELLOW = COL_YELLOW, RED = COL_RED,
+                     TARGET = COL_TARGET, BG = COL_BG, BORDER = COL_BORDER,
+                     BTN = COL_BTN, BTN_SEL = COL_BTN_SEL, ACCENT = COL_ACCENT }
+
+-- Finds a theme by name. Ignores case, spaces and ' so "sandoria" or
+-- "high contrast" both work. nil if there's no such theme.
+local function theme_key(s)
+    return (tostring(s or ''):lower():gsub('[^%a]', ''))
+end
+local function find_theme(name)
+    local want = theme_key(name)
+    for _, th in ipairs(THEMES) do
+        if theme_key(th.name) == want then return th end
+    end
+    return nil
+end
+
+-- Copies a theme's colors in. Returns the name actually used.
+local function apply_theme(name)
+    local th = find_theme(name) or THEMES[1]
+    for k, dst in pairs(THEME_COLS) do
+        for i = 1, 4 do dst[i] = th[k][i] end
+    end
+    currentTheme = th
+    return th.name
+end
+local appliedTheme = nil   -- theme currently copied in (checked each frame)
+
+-- One style setting: your own tweak if set, else the theme's, else the default.
+local function S(key)
+    local mine = config.style and config.style[key]
+    if mine ~= nil then return mine end
+    local ts = currentTheme and currentTheme.style
+    if ts ~= nil and ts[key] ~= nil then return ts[key] end
+    return DEFAULT_STYLE[key]
+end
+
+local function clamp(v, lo, hi, def)
+    v = tonumber(v) or def
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+-- Ashita's imgui returns positions either as two numbers or as a table.
+local function xy(a, b)
+    if type(a) == 'table' then return a[1] or a.x or 0, a[2] or a.y or 0 end
+    return a or 0, b or 0
+end
+
+local function u32(c) return imgui.GetColorU32(c) end
+
+-- Not every Ashita build has the same imgui calls, so newer ones are
+-- only used when they exist.
+local function has(name) return imgui[name] ~= nil end
+
+-- Can the text size be changed on this Ashita build?
+local function can_scale()
+    return has('SetWindowFontScale') or (has('PushFont') and has('PopFont') and has('GetFontSize'))
+end
+
+-- A line across the box (or a small gap if lines aren't supported).
+local function line(col)
+    if not has('Separator') then imgui.Dummy({ 0, 4 }); return end
+    imgui.PushStyleColor(ImGuiCol_Separator, col)
+    imgui.Separator()
+    imgui.PopStyleColor(1)
+end
+
+-- Text size for a box. Older builds: SetWindowFontScale. Newer builds:
+-- PushFont with a size (popped again in box_end).
+local fontPushed = false
+local function box_scale()
+    local sc = clamp(S('scale'), 80, 130, 100) / 100
+    if has('SetWindowFontScale') then
+        pcall(imgui.SetWindowFontScale, sc)
+        return
+    end
+    if sc == 1 or not can_scale() then return end
+    local okSize, base = pcall(imgui.GetFontSize)
+    if not okSize or type(base) ~= 'number' then return end
+    fontPushed = pcall(imgui.PushFont, nil, base * sc)
+end
+
+-- Start of a box: text size, then the title strip (when the style has headers).
+local function box_header(title)
+    box_scale()
+    if not S('header') then return end
+    imgui.TextColored(COL_ACCENT, title)
+    line(COL_ACCENT)
+end
+
+-- Space between groups: a line or a small gap.
+local function group_gap()
+    if S('dividers') then line(COL_BORDER) else imgui.Dummy({ 0, 4 }) end
+end
+
+-- Timer bar under a row: frac is 0-1 (time left / full time).
+-- x1 / x2 are the row's left and right edges on screen.
+local function timer_bar(frac, col, x1, x2)
+    if not S('bars') or frac == nil then return end
+    local h = clamp(S('barH'), 2, 8, 3)
+    pcall(function ()
+        if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+        local _, cy = xy(imgui.GetCursorScreenPos())
+        cy = cy - 2
+        local dl = imgui.GetWindowDrawList()
+        dl:AddRectFilled({ x1, cy }, { x2, cy + h },
+            u32({ COL_BORDER[1], COL_BORDER[2], COL_BORDER[3], 0.35 }), h / 2)
+        if frac > 0 then
+            dl:AddRectFilled({ x1, cy }, { x1 + (x2 - x1) * frac, cy + h }, u32(col), h / 2)
+        end
+    end)
+    imgui.Dummy({ 0, h - 2 })
+end
+
+-- Right edge of the last thing drawn (for bar width).
+local function last_right(x1)
+    local ok, a, b = pcall(imgui.GetItemRectMax)
+    if ok then
+        local x = xy(a, b)
+        if x > x1 then return x end
+    end
+    return x1 + 150
+end
+
+-- Side stripe and inner border, drawn just before a box ends.
+local function box_decor()
+    local stripe = clamp(S('stripe'), 0, 6, 0)
+    local double = (S('border') == 'double')
+    if stripe == 0 and not double then return end
+    pcall(function ()
+        local dl = imgui.GetWindowDrawList()
+        local wx, wy = xy(imgui.GetWindowPos())
+        local ww, wh = xy(imgui.GetWindowSize())
+        local r = clamp(S('rounding'), 0, 12, 6)
+        if stripe > 0 then
+            local inset = math.max(2, r / 2)
+            dl:AddRectFilled({ wx + 2, wy + inset }, { wx + 2 + stripe, wy + wh - inset },
+                u32(COL_ACCENT), stripe / 2)
+        end
+        if double then
+            dl:AddRect({ wx + 3, wy + 3 }, { wx + ww - 3, wy + wh - 3 },
+                u32(COL_BORDER), math.max(0, r - 2), 0, 1)
+        end
+    end)
+end
+
+-- End of a box: draw the stripe / inner border, undo the text size.
+local function box_end()
+    box_decor()
+    if fontPushed then
+        pcall(imgui.PopFont)
+        fontPushed = false
+    end
+end
+
+-- Number control: a slider when available, else - / + buttons.
+-- Returns true when the value changed; v is { number }.
+local function int_control(label, v, lo, hi, fmt)
+    if has('SliderInt') then
+        return imgui.SliderInt(label, v, lo, hi, fmt or '%d')
+    end
+    local changed = false
+    local id = label:match('##(.*)$') or label
+    local shown = label:gsub('##.*$', '')
+    if imgui.SmallButton(' - ##m' .. id) and v[1] > lo then v[1] = v[1] - 1; changed = true end
+    imgui.SameLine(0, 4)
+    imgui.TextColored(COL_NAME, (string.format(fmt or '%d', v[1])))
+    imgui.SameLine(0, 4)
+    if imgui.SmallButton(' + ##p' .. id) and v[1] < hi then v[1] = v[1] + 1; changed = true end
+    imgui.SameLine(0, 8)
+    imgui.TextColored(COL_NAME, shown)
+    return changed
+end
+
+local function width_push(w) if has('PushItemWidth') then imgui.PushItemWidth(w) end end
+local function width_pop() if has('PushItemWidth') and has('PopItemWidth') then imgui.PopItemWidth() end end
+
+-- Set when a box's position is typed in or nudged in the menu, so the box
+-- jumps there on the next draw (instead of only on first use).
+local moveBox = { buff = false, recast = false }
 
 local KEEP_AFTER = 5    -- seconds to keep a buff at 0:00
 
@@ -235,6 +596,13 @@ local function seconds_left(raw)
     return secs
 end
 
+-- Some buffs show on you under a different icon ID than the effect the
+-- spell reports. Utsusemi reports Copy Image (66) but shows as
+-- Copy Image 2 / 3 / 4+ (444-446) depending on how many shadows are left.
+local BUFF_ICONS = {
+    [66] = { [66] = true, [444] = true, [445] = true, [446] = true },
+}
+
 -- Time left on the newest copy of a buff on yourself.
 local function read_self_buff(buffId)
     if buffId == nil or buffId <= 0 then return nil end
@@ -244,9 +612,10 @@ local function read_self_buff(buffId)
     local raws  = player:GetStatusTimers()
     if buffs == nil or raws == nil then return nil end
 
+    local match = BUFF_ICONS[buffId] or { [buffId] = true }
     local best = nil
     for i, id in pairs(buffs) do
-        if id == buffId then
+        if match[id] then
             local s = seconds_left(raws[i])
             if s ~= nil and (best == nil or s > best) then best = s end
         end
@@ -412,14 +781,61 @@ end
 -- Watch your actions (packet 0x028)
 ----------------------------------------------------------------------
 local SPELL_MSGS = { [230] = true, [266] = true, [205] = true, [319] = true }
-local JA_MSGS    = { [100] = true, [266] = true, [319] = true, [320] = true, [441] = true }
+-- Job ability messages that mean "gained a buff". 115-121 are the
+-- "attacks / defense / accuracy / evasion enhanced" lines (Berserk, Warcry,
+-- Defender, Aggressor, Focus, Dodge...), 285 is Warcry landing on others.
+local JA_MSGS    = { [100] = true, [115] = true, [116] = true, [117] = true, [118] = true,
+                     [120] = true, [121] = true, [266] = true, [285] = true,
+                     [319] = true, [320] = true, [441] = true }
+
+-- Abilities marked as buffs in jobdata.lua. For these, any message counts,
+-- as long as the number it carries is a real status effect.
+local buffAbilities = nil
+local function is_buff_ability(id)
+    if buffAbilities == nil then
+        buffAbilities = {}
+        local ok, data = pcall(require, 'jobdata')
+        if ok and type(data) == 'table' then
+            for aid, info in pairs(data.abilities or {}) do
+                if info.buff then buffAbilities[aid] = true end
+            end
+        end
+    end
+    return buffAbilities[id] == true
+end
+
+-- True when id is a status effect with a name (so it's a buff, not damage).
+local function is_status(id)
+    if id == nil or id <= 0 or id > 1023 then return false end
+    local rm = AshitaCore:GetResourceManager()
+    local ok, name = pcall(function () return rm:GetString('buffs.names', id) end)
+    if not ok then return true end   -- can't check on this build; trust the range
+    return name ~= nil and name ~= ''
+end
 local ROLL_MSGS  = { [420] = true, [421] = true }
 local DOUBLE_UP  = { [424] = true }
 local BUST_MSGS  = { [426] = true, [427] = true }
 
+-- Bonus time for a party member's cast, from the gear you ticked for them
+-- in the Party tab (e.g. Dilation Ring: +30s on Haste / Refresh).
+local function party_gear_add(caster, name)
+    local mine = config.party.gear[caster]
+    if mine == nil then return 0 end
+    local add = 0
+    for _, rule in ipairs(config.rules or T{}) do
+        if mine[rule.item] then
+            for _, b in ipairs(rule.buffs or T{}) do
+                if b == name then add = add + (rule.add or 0) end
+            end
+        end
+    end
+    return add
+end
+
 local function add_pending(p)
     if p.caster ~= nil then
-        p.sig, p.ruleAdd, p.bonus = 'party', 0, 0   -- can't see their gear
+        -- Their gear can't be seen; use what you ticked for them.
+        p.sig, p.ruleAdd, p.bonus = 'party', party_gear_add(p.caster, p.name), 0
     else
         p.sig, p.ruleAdd, p.bonus = gear_info(p.name, p.kind)
     end
@@ -598,6 +1014,13 @@ local function handle_action(e)
 
     -- Other abilities
     local hit2, onSelf2, effect2 = gather(JA_MSGS)
+    if #hit2 == 0 and is_buff_ability(param) then
+        -- Buff ability with a message we don't know: accept it if the
+        -- number it carries is a real status effect.
+        local anyMsg = setmetatable({}, { __index = function () return true end })
+        hit2, onSelf2, effect2 = gather(anyMsg)
+        if not is_status(effect2) then return end
+    end
     if #hit2 == 0 or effect2 == nil or effect2 == 0 then return end
     add_pending({
         name    = name,
@@ -664,7 +1087,8 @@ local function apply(p, expires, est)
                 end
             end
         end
-        row.people[who] = { exp = expires, est = est }
+        -- dur = full time, so a timer bar knows how much is left.
+        row.people[who] = { exp = expires, est = est, dur = math.max(1, expires - p.t) }
     end
 
     if p.caster == nil then
@@ -805,17 +1229,56 @@ local FLAGS = bit.bor(
     ImGuiWindowFlags_NoSavedSettings
 )
 
-local function push_style()
-    imgui.PushStyleColor(ImGuiCol_WindowBg, COL_BG)
+-- Pushes the look for a window. isBox = buff / recast box (gets stripe and
+-- spacing); the settings window only gets colors, corners and border.
+local styleStack = {}
+local function push_style(isBox)
+    local nc, nv = 0, 0
+    -- Background: theme color, with your own opacity if you set one.
+    local op = tonumber(config.opacity) or 0
+    if op > 0 then
+        op = clamp(op, 10, 100, 100)
+        imgui.PushStyleColor(ImGuiCol_WindowBg, { COL_BG[1], COL_BG[2], COL_BG[3], op / 100 })
+    else
+        imgui.PushStyleColor(ImGuiCol_WindowBg, COL_BG)
+    end
     imgui.PushStyleColor(ImGuiCol_Border, COL_BORDER)
-    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, 0)
-    imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1)
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { 6, 4 })
+    nc = 2
+
+    -- Rounded corners on the boxes, the inner panels, and buttons / checkboxes.
+    local r = clamp(S('rounding'), 0, 12, 6)
+    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, r)
+    imgui.PushStyleVar(ImGuiStyleVar_ChildRounding, r)
+    imgui.PushStyleVar(ImGuiStyleVar_FrameRounding, math.floor(r / 2 + 0.5))
+
+    -- Border: none / thin / thick (double = thin plus an inner line, see box_decor).
+    local b = S('border')
+    local bsize = (b == 'none') and 0 or (b == 'thick') and 2 or 1
+    imgui.PushStyleVar(ImGuiStyleVar_WindowBorderSize, bsize)
+
+    -- A bit more side room so text doesn't touch the rounded corners / stripe.
+    local stripe = isBox and clamp(S('stripe'), 0, 6, 0) or 0
+    local padX = 6 + math.floor(r / 3) + (stripe > 0 and stripe + 2 or 0)
+    local padY = 4 + math.floor(r / 4) + ((isBox and b == 'double') and 2 or 0)
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { padX, padY })
+    nv = 5
+
+    -- Row spacing (boxes only). "normal" leaves the game's own spacing alone.
+    if isBox then
+        local sp = S('spacing')
+        if sp == 'compact' then
+            imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 8, 1 }); nv = nv + 1
+        elseif sp == 'roomy' then
+            imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { 8, 7 }); nv = nv + 1
+        end
+    end
+    styleStack[#styleStack + 1] = { nc, nv }
 end
 
 local function pop_style()
-    imgui.PopStyleVar(3)
-    imgui.PopStyleColor(2)
+    local t = table.remove(styleStack) or { 2, 5 }
+    imgui.PopStyleVar(t[2])
+    imgui.PopStyleColor(t[1])
 end
 
 ----------------------------------------------------------------------
@@ -835,6 +1298,7 @@ local TWO_HOURS = {
 local abilityNames = {}   -- [recast timer id] = name (cached)
 local readyUntil   = T{}  -- [name] = { group, until } for "Ready" lines
 local lastRecasts  = T{}  -- [name] = group, seen on cooldown last frame
+local recastTotal  = T{}  -- [name] = longest time seen this cooldown (for timer bars)
 
 local function ability_name(id)
     if abilityNames[id] ~= nil then return abilityNames[id] end
@@ -933,9 +1397,16 @@ local function draw_recasts(now)
     for name, g in pairs(lastRecasts) do
         if live[name] == nil then
             readyUntil[name] = { group = g, untilT = now + KEEP_AFTER }
+            recastTotal[name] = nil
         end
     end
     lastRecasts = live
+    -- Full time of each cooldown = the longest time left seen for it.
+    for _, g in ipairs(RECAST_GROUPS) do
+        for _, r in ipairs(cur[g]) do
+            if (recastTotal[r.name] or 0) < r.left then recastTotal[r.name] = r.left end
+        end
+    end
 
     -- Build what to show.
     local show  = { Abilities = T{}, Spells = T{} }
@@ -960,8 +1431,10 @@ local function draw_recasts(now)
     end
     if count == 0 then return end
 
-    imgui.SetNextWindowPos({ config.rx, config.ry }, ImGuiCond_FirstUseEver)
-    push_style()
+    imgui.SetNextWindowPos({ config.rx, config.ry },
+        moveBox.recast and ImGuiCond_Always or ImGuiCond_FirstUseEver)
+    moveBox.recast = false
+    push_style(true)
     -- Name column fits the longest name (nothing is shortened here).
     local rwidth = NAME_WIDTH
     for _, g in ipairs(RECAST_GROUPS) do
@@ -971,6 +1444,7 @@ local function draw_recasts(now)
     end
 
     if imgui.Begin('personalbuffs_recast', true, FLAGS) then
+        box_header('Recasts')
         local first = true
         for _, g in ipairs(RECAST_GROUPS) do
             local list = show[g]
@@ -979,19 +1453,27 @@ local function draw_recasts(now)
                     if a.left ~= b.left then return a.left < b.left end
                     return a.name < b.name
                 end)
-                if not first then imgui.Dummy({ 0, 4 }) end
+                if not first then group_gap() end
                 first = false
+                if config.recastLabels then imgui.TextColored(COL_ACCENT, g) end
                 for _, r in ipairs(list) do
+                    local x1 = xy(imgui.GetCursorScreenPos())
                     imgui.TextColored(COL_NAME, string.format('%-' .. rwidth .. 's :', r.name))
                     imgui.SameLine(0, 6)
                     if r.ready then
                         imgui.TextColored(COL_GREEN, 'Ready')
+                        timer_bar(0, COL_GREEN, x1, last_right(x1))
                     else
                         imgui.TextColored(recast_color(r.left), fmt_time(r.left, false))
+                        local total = recastTotal[r.name]
+                        timer_bar(total and total > 0 and (r.left / total) or nil,
+                                  recast_color(r.left), x1, last_right(x1))
                     end
                 end
             end
         end
+
+        box_end()
 
         -- Remember where the box was dragged to.
         local x, y = imgui.GetWindowPos()
@@ -1098,8 +1580,6 @@ end
 local draw_party_tab   -- defined below
 local selJob = nil         -- job shown on the right
 local selTab = 'Buffs'     -- 'Buffs' or 'Recasts'
-local COL_BTN     = { 0.18, 0.20, 0.26, 0.90 }
-local COL_BTN_SEL = { 0.28, 0.38, 0.30, 0.95 }
 local CHILD_BORDER = ImGuiChildFlags_Borders or true
 
 -- A button that looks "pressed" when selected.
@@ -1341,7 +1821,11 @@ draw_party_tab = function()
         imgui.TextColored(COL_NAME, 'Nobody yet. Join a party and they show up here.')
         return
     end
-    if imgui.BeginTable('pt_people', 2) then
+    imgui.TextColored(COL_NAME, 'Tick gear a person wears so their buffs get the extra time.')
+
+    -- One row per person: show on/off, then one box per gear item (Dilation Ring...).
+    local rules = config.rules or T{}
+    if imgui.BeginTable('pt_people', 1 + #rules) then
         for _, n in ipairs(names) do
             imgui.TableNextColumn()
             local pv = { not config.party.hidden[n] }
@@ -1350,10 +1834,350 @@ draw_party_tab = function()
                 config.party.hidden[n] = (not pv[1]) or nil
                 settings.save()
             end
+
+            for ri, rule in ipairs(rules) do
+                imgui.TableNextColumn()
+                local mine = config.party.gear[n]
+                local gv   = { mine ~= nil and mine[rule.item] == true }
+                if imgui.Checkbox(rule.item .. '##pg_' .. ri .. '_' .. n, gv) then
+                    if gv[1] then
+                        config.party.gear[n] = config.party.gear[n] or T{}
+                        config.party.gear[n][rule.item] = true
+                    elseif mine ~= nil then
+                        mine[rule.item] = nil
+                        if next(mine) == nil then config.party.gear[n] = nil end
+                    end
+                    settings.save()
+                end
+            end
             imgui.PopStyleColor(1)
         end
         imgui.EndTable()
     end
+end
+
+-- True when the last slider was just let go after a change (so we save once,
+-- not on every step). Older imgui builds without that call save on each
+-- change instead; anything left unsaved is saved on unload anyway.
+local function item_done()
+    if imgui.IsItemDeactivatedAfterEdit ~= nil then
+        return imgui.IsItemDeactivatedAfterEdit()
+    end
+    if imgui.IsItemEdited ~= nil then return imgui.IsItemEdited() end
+    return false
+end
+
+-- Theme tab: one button per theme, with a small color sample next to it.
+----------------------------------------------------------------------
+-- Theme families (main theme -> sub-themes) and saved custom themes
+----------------------------------------------------------------------
+local FAMILIES = {
+    { name = 'Default', themes = { 'Default' } },
+    { name = 'Glass',   themes = { 'Glass', 'Glass Rose', 'Glass Mint', 'Glass Amber',
+                                   'Glass Violet', 'Glass Ocean', 'Glass Smoke', 'Glass Frost' } },
+    { name = 'Nations', themes = { "San d'Oria", 'Bastok', 'Windurst' } },
+    { name = 'Dark',    themes = { 'Midnight', 'Ember', 'Crystal', 'Terminal' } },
+    { name = 'Simple',  themes = { 'Classic', 'Minimal', 'High Contrast' } },
+}
+local STYLE_KEYS = { 'bars', 'barH', 'header', 'border', 'stripe', 'dividers', 'spacing', 'scale', 'rounding' }
+
+local function find_family(name)
+    for _, f in ipairs(FAMILIES) do
+        if f.name == name then return f end
+    end
+    return nil
+end
+
+local function family_of(theme)
+    for _, f in ipairs(FAMILIES) do
+        for _, n in ipairs(f.themes) do
+            if n == theme then return f.name end
+        end
+    end
+    return 'Default'
+end
+
+-- Button label inside a family: "Glass Rose" -> "Rose", "Glass" -> "Clear".
+local function short_name(fam, name)
+    if fam.name == 'Glass' then
+        if name == 'Glass' then return 'Clear' end
+        return (name:gsub('^Glass ', ''))
+    end
+    return name
+end
+
+-- Picks a built-in theme (its full look, your tweaks cleared).
+local function use_theme(name)
+    config.theme        = name
+    config.style        = T{}
+    config.opacity      = 0
+    config.activeCustom = nil
+    settings.save()
+end
+
+local function find_custom(name)
+    local want = theme_key(name)
+    for i, c in ipairs(config.customThemes or {}) do
+        if theme_key(c.name) == want then return c, i end
+    end
+    return nil, nil
+end
+
+-- Saves the current look (base theme + every style setting + opacity).
+-- A blank name becomes "Custom 1", "Custom 2"... Same name = overwrite.
+local function save_custom(name)
+    name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' then
+        local n = 1
+        repeat
+            name = 'Custom ' .. n
+            n = n + 1
+        until find_custom(name) == nil
+    end
+    local st = T{}
+    for _, k in ipairs(STYLE_KEYS) do st[k] = S(k) end
+    local snap = T{ name = name, base = config.theme, style = st, opacity = tonumber(config.opacity) or 0 }
+    local _, i = find_custom(name)
+    if i ~= nil then config.customThemes[i] = snap else table.insert(config.customThemes, snap) end
+    config.activeCustom = name
+    settings.save()
+    return name
+end
+
+local function use_custom(c)
+    config.theme = find_theme(c.base) and c.base or 'Default'
+    config.style = T{}
+    for k, v in pairs(c.style or {}) do config.style[k] = v end
+    config.opacity      = tonumber(c.opacity) or 0
+    config.activeCustom = c.name
+    settings.save()
+end
+
+local function delete_custom(name)
+    local _, i = find_custom(name)
+    if i ~= nil then table.remove(config.customThemes, i) end
+    if config.activeCustom == name then config.activeCustom = nil end
+    settings.save()
+end
+
+-- Theme tab UI state
+local selFamily = nil         -- family shown in the sub-theme row
+local nameBuf   = { '' }      -- name typed for a custom theme
+local showStyle = false       -- Style section open?
+local showPos   = false       -- Box position section open?
+
+-- A small "+ Label" / "- Label" button that opens / closes a section.
+local function fold(label, open)
+    if imgui.SmallButton((open and '-  ' or '+  ') .. label .. '##fold' .. label) then
+        return not open
+    end
+    return open
+end
+
+-- Buttons laid out 4 per row.
+local function grid_button(i, label, selected)
+    if (i - 1) % 4 ~= 0 then imgui.SameLine(0, 4) end
+    return pick_button(label, selected, 84)
+end
+
+local function draw_theme_tab()
+    if selFamily == nil then
+        selFamily = config.activeCustom and 'Custom' or family_of(config.theme)
+    end
+
+    -- Main themes.
+    local fams = {}
+    for _, f in ipairs(FAMILIES) do fams[#fams + 1] = f.name end
+    fams[#fams + 1] = 'Custom'
+    for i, fname in ipairs(fams) do
+        if i > 1 then imgui.SameLine(0, 4) end
+        if pick_button(fname .. '##fam' .. i, selFamily == fname, 0) then
+            selFamily = fname
+            local f = find_family(fname)
+            if f ~= nil and #f.themes == 1 then use_theme(f.themes[1]) end
+        end
+    end
+    imgui.Dummy({ 0, 2 })
+
+    -- Sub-themes of the chosen family (or your saved themes).
+    if selFamily == 'Custom' then
+        local list = config.customThemes or {}
+        if #list == 0 then
+            imgui.TextColored(COL_NAME, 'No saved themes yet. Make a look, then Save it below.')
+        end
+        for i, c in ipairs(list) do
+            if grid_button(i, c.name .. '##cus' .. i, config.activeCustom == c.name) then use_custom(c) end
+        end
+    else
+        local f = find_family(selFamily) or FAMILIES[1]
+        if #f.themes > 1 then
+            for i, n in ipairs(f.themes) do
+                local sel = (config.theme == n and config.activeCustom == nil)
+                if grid_button(i, short_name(f, n) .. '##var' .. i, sel) then use_theme(n) end
+                local th = find_theme(n)
+                if th ~= nil and th.desc ~= nil and has('IsItemHovered') and has('SetTooltip') and imgui.IsItemHovered() then
+                    imgui.SetTooltip(th.desc)
+                end
+            end
+        end
+    end
+
+    -- What's in use now, with a small color sample.
+    imgui.Dummy({ 0, 4 })
+    local now = config.activeCustom or (currentTheme and currentTheme.name) or 'Default'
+    imgui.TextColored(COL_ACCENT, 'Using: ' .. now)
+    imgui.SameLine(0, 10)
+    imgui.TextColored(COL_NAME, 'Haste :')
+    imgui.SameLine(0, 6)
+    imgui.TextColored(COL_GREEN, '2:40')
+    imgui.SameLine(0, 8)
+    imgui.TextColored(COL_YELLOW, '0:25')
+    imgui.SameLine(0, 8)
+    imgui.TextColored(COL_RED, '0:08')
+    if config.activeCustom == nil and currentTheme ~= nil and currentTheme.desc ~= nil then
+        imgui.TextColored(COL_NAME, currentTheme.desc)
+    elseif config.activeCustom ~= nil then
+        imgui.TextColored(COL_NAME, 'Your saved theme (based on ' .. tostring(config.theme) .. ').')
+    end
+
+    -- Save the current look as your own theme.
+    imgui.Dummy({ 0, 4 })
+    if has('InputText') then
+        width_push(150)
+        pcall(imgui.InputText, 'Name##pbname', nameBuf, 24)
+        width_pop()
+        imgui.SameLine(0, 6)
+    end
+    if imgui.SmallButton('Save look##pbsave') then
+        save_custom(nameBuf[1])
+        nameBuf[1] = ''
+        selFamily  = 'Custom'
+    end
+    if config.activeCustom ~= nil then
+        imgui.SameLine(0, 6)
+        if imgui.SmallButton('Update "' .. config.activeCustom .. '"##pbupd') then
+            save_custom(config.activeCustom)
+        end
+        imgui.SameLine(0, 6)
+        if imgui.SmallButton('Delete##pbdel') then
+            delete_custom(config.activeCustom)
+        end
+    end
+
+    -- Style and position, folded away until opened.
+    imgui.Dummy({ 0, 6 })
+    showStyle = fold('Style', showStyle)
+    if showStyle then
+        -- Style: your tweaks on top of the theme.
+        if imgui.SmallButton("Use theme's style##stdef") then
+            config.style        = T{}
+            config.opacity      = 0
+            config.activeCustom = nil
+            settings.save()
+        end
+        imgui.SameLine(0, 8)
+        imgui.TextColored(COL_NAME, 'Changes stay until you pick another theme.')
+
+        local function check(label, key)
+            local v = { S(key) == true }
+            if imgui.Checkbox(label .. '##st_' .. key, v) then
+                config.style[key] = v[1]
+                settings.save()
+            end
+        end
+        local function choice(label, key, opts)
+            imgui.TextColored(COL_NAME, label)
+            for _, o in ipairs(opts) do
+                imgui.SameLine(0, 4)
+                if pick_button(o[2] .. '##st_' .. key .. o[1], S(key) == o[1], 64) then
+                    config.style[key] = o[1]
+                    settings.save()
+                end
+            end
+        end
+        local function slider(label, key, lo, hi, def, fmt)
+            local v = { math.floor(clamp(S(key), lo, hi, def) + 0.5) }
+            width_push(160)
+            if int_control(label .. '##st_' .. key, v, lo, hi, fmt) then
+                config.style[key] = v[1]
+                if not has('SliderInt') then settings.save() end
+            end
+            local done = has('SliderInt') and item_done()
+            width_pop()
+            if done then settings.save() end
+        end
+
+        check('Timer bars', 'bars')
+        if S('bars') then
+            imgui.SameLine(0, 16)
+            slider('Bar height', 'barH', 2, 8, 3, '%d px')
+        end
+        check('Box headers', 'header')
+        imgui.SameLine(0, 16)
+        check('Lines between groups', 'dividers')
+        local lv = { config.recastLabels == true }
+        if imgui.Checkbox('Abilities / Spells labels in the recast box##st_rlabels', lv) then
+            config.recastLabels = lv[1]
+            settings.save()
+        end
+        choice('Border ', 'border', { { 'none', 'None' }, { 'thin', 'Thin' },
+                                      { 'thick', 'Thick' }, { 'double', 'Double' } })
+        choice('Spacing', 'spacing', { { 'compact', 'Compact' }, { 'normal', 'Normal' },
+                                       { 'roomy', 'Roomy' } })
+        slider('Side stripe', 'stripe', 0, 6, 0, '%d px')
+        if can_scale() then slider('Text size', 'scale', 80, 130, 100, '%d%%') end
+        slider('Corner roundness', 'rounding', 0, 12, 6)
+
+        -- Background opacity. 0 means "use the theme's own".
+        local thBg = (find_theme(config.theme) or THEMES[1]).BG[4]
+        local cur  = tonumber(config.opacity) or 0
+        local ov   = { cur > 0 and cur or math.floor(thBg * 100 + 0.5) }
+        width_push(160)
+        if int_control('Background opacity##opac', ov, 10, 100, '%d%%') then
+            config.opacity = ov[1]
+            if not has('SliderInt') then settings.save() end
+        end
+        local opDone = has('SliderInt') and item_done()
+        width_pop()
+        if opDone then settings.save() end
+        imgui.SameLine(0, 8)
+        if imgui.SmallButton('Theme default##opdef') then
+            config.opacity = 0
+            settings.save()
+        end
+
+    end
+    showPos = fold('Box position', showPos)
+    if showPos then
+        -- Box position: type a number, or click - / + (hold Ctrl for steps of 10).
+        imgui.TextColored(COL_NAME, 'Type a number or use - / +. Ctrl + click moves 10.')
+        local function pos_row(label, id, xKey, yKey, box)
+            imgui.TextColored(COL_NAME, label)
+            for _, k in ipairs({ xKey, yKey }) do
+                imgui.SameLine(0, 8)
+                local v = { math.floor((tonumber(config[k]) or 0) + 0.5) }
+                local axis = (k == xKey) and 'X' or 'Y'
+                local changed
+                if has('InputInt') then
+                    width_push(110)
+                    changed = imgui.InputInt(axis .. '##' .. id .. k, v, 1, 10)
+                    width_pop()
+                else
+                    changed = int_control(axis .. '##' .. id .. k, v, 0, 9999)
+                end
+                if changed then
+                    config[k] = math.max(0, v[1])
+                    moveBox[box] = true
+                    settings.save()
+                end
+            end
+        end
+        pos_row('Buff box  ', 'pbuff', 'x', 'y', 'buff')
+        pos_row('Recast box', 'prec', 'rx', 'ry', 'recast')
+        imgui.TextColored(COL_NAME, 'A box only shows when it has something in it. Test mode helps.')
+    end
+    imgui.Dummy({ 0, 4 })
+    imgui.TextColored(COL_NAME, 'Tip: turn Test on to see the boxes while you pick.')
 end
 
 local function draw_config()
@@ -1395,23 +2219,25 @@ local function draw_config()
 
         -- Right: Buffs / Recasts tabs and the groups.
         imgui.BeginChild('pb_items', { 0, 0 }, CHILD_BORDER)
-        if pick_button('Buffs##tabb', selTab == 'Buffs', 80) then selTab = 'Buffs' end
+        if pick_button('Buffs##tabb', selTab == 'Buffs', 62) then selTab = 'Buffs' end
         imgui.SameLine(0, 4)
-        if pick_button('Recasts##tabr', selTab == 'Recasts', 80) then selTab = 'Recasts' end
+        if pick_button('Recasts##tabr', selTab == 'Recasts', 62) then selTab = 'Recasts' end
         imgui.SameLine(0, 4)
-        if pick_button('Party##tabp', selTab == 'Party', 80) then selTab = 'Party' end
+        if pick_button('Party##tabp', selTab == 'Party', 62) then selTab = 'Party' end
+        imgui.SameLine(0, 4)
+        if pick_button('Theme##tabt', selTab == 'Theme', 62) then selTab = 'Theme' end
         imgui.SameLine(0, 12)
-        if pick_button((testMode and 'Test: on' or 'Test: off') .. '##test', testMode, 80) then
+        if pick_button((testMode and 'Test: on' or 'Test: off') .. '##test', testMode, 70) then
             toggle_test()
         end
-        if selTab ~= 'Party' then
+        if selTab ~= 'Party' and selTab ~= 'Theme' then
             imgui.SameLine(0, 12)
             imgui.TextColored(COL_TARGET, JOB_NAMES[selJob])
         end
         imgui.Dummy({ 0, 4 })
 
-        if selTab == 'Party' then
-            draw_party_tab()
+        if selTab == 'Party' or selTab == 'Theme' then
+            if selTab == 'Party' then draw_party_tab() else draw_theme_tab() end
             imgui.EndChild()
             imgui.End()
             pop_style()
@@ -1451,6 +2277,11 @@ end
 ashita.events.register('d3d_present', 'pb_present', function ()
     local now = os.time()
     if not trustsPurged then purge_trusts() end
+    -- Copy in the theme's colors when it changes (or a bad name was saved).
+    if appliedTheme ~= config.theme then
+        config.theme = apply_theme(config.theme)
+        appliedTheme = config.theme
+    end
     process_pending(now)
     draw_config()
     draw_recasts(now)
@@ -1485,7 +2316,7 @@ ashita.events.register('d3d_present', 'pb_present', function ()
             if caster == nil then row.total = t.total end
         end
         for who, pp in pairs(t.people) do
-            row.entries:append({ who = who, exp = pp.exp, est = pp.est, caster = caster })
+            row.entries:append({ who = who, exp = pp.exp, est = pp.est, dur = pp.dur, caster = caster })
         end
     end
 
@@ -1511,7 +2342,7 @@ ashita.events.register('d3d_present', 'pb_present', function ()
         if #row.entries > 0 then
             for _, e in ipairs(row.entries) do
                 if row.expires == nil or e.exp < row.expires then
-                    row.expires, row.est = e.exp, e.est
+                    row.expires, row.est, row.dur = e.exp, e.est, e.dur
                 end
             end
             local g = row.group or 'Other'
@@ -1523,18 +2354,21 @@ ashita.events.register('d3d_present', 'pb_present', function ()
     if #shown == 0 then return end
     local width = column_width(shown)
 
-    imgui.SetNextWindowPos({ config.x, config.y }, ImGuiCond_FirstUseEver)
-    push_style()
+    imgui.SetNextWindowPos({ config.x, config.y },
+        moveBox.buff and ImGuiCond_Always or ImGuiCond_FirstUseEver)
+    moveBox.buff = false
+    push_style(true)
 
     if imgui.Begin('personalbuffs', true, FLAGS) then
+        box_header('Buffs')
         local first = true
         for _, g in ipairs(GROUPS) do
             local list = byGroup[g]
             if list ~= nil then
                 table.sort(list, function (a, b) return a.expires < b.expires end)
 
-                -- Small gap between groups.
-                if not first then imgui.Dummy({ 0, 4 }) end
+                -- Small gap (or a line) between groups.
+                if not first then group_gap() end
                 first = false
 
                 for _, t in ipairs(list) do
@@ -1545,10 +2379,12 @@ ashita.events.register('d3d_present', 'pb_present', function ()
                     local key     = t.key
                     local openTbl = t.openTbl
 
-                    local _, rowTop = imgui.GetCursorScreenPos()
+                    local rowLeft, rowTop = imgui.GetCursorScreenPos()
                     imgui.TextColored(COL_NAME, string.format('%-' .. width .. 's :', label))
                     imgui.SameLine(0, 6)
                     imgui.TextColored(time_color(left), fmt_time(left, t.est))
+                    timer_bar(t.dur and (left / t.dur) or nil, time_color(left),
+                              rowLeft, last_right(rowLeft))
                     local _, rowBottom = imgui.GetCursorScreenPos()
 
                     -- The whole row (full box width) counts as the click area.
@@ -1584,6 +2420,8 @@ ashita.events.register('d3d_present', 'pb_present', function ()
             end
         end
         if imgui.IsMouseReleased(0) then press = nil end
+
+        box_end()
 
         -- Remember where the box was dragged to.
         local x, y = imgui.GetWindowPos()
@@ -1679,6 +2517,36 @@ ashita.events.register('command', 'pb_command', function (e)
         return
     end
 
+    -- /pb theme lists themes; /pb theme <name> picks one.
+    if cmd == 'theme' then
+        if rest == '' then
+            msg('Theme: ' .. (config.activeCustom or config.theme))
+            for _, f in ipairs(FAMILIES) do
+                msg('  ' .. f.name .. ': ' .. table.concat(f.themes, ', '))
+            end
+            local mine = {}
+            for _, c in ipairs(config.customThemes or {}) do mine[#mine + 1] = c.name end
+            if #mine > 0 then msg('  Custom: ' .. table.concat(mine, ', ')) end
+            return
+        end
+        local c = find_custom(rest)
+        if c ~= nil then
+            use_custom(c)
+            selFamily = 'Custom'
+            msg('Theme: ' .. c.name)
+            return
+        end
+        local th = find_theme(rest)
+        if th == nil then
+            msg('No theme called "' .. rest .. '". Type /pb theme to see the list.')
+            return
+        end
+        use_theme(th.name)
+        selFamily = family_of(th.name)
+        msg('Theme: ' .. th.name)
+        return
+    end
+
     if cmd == 'list' then
         local names = T{}
         for n, v in pairs(config.hidden) do
@@ -1702,7 +2570,7 @@ ashita.events.register('command', 'pb_command', function (e)
         return
     end
 
-    msg('Commands: /pb (settings window), /pb test (on/off), /pb party (on/off), /pb clear, /pb hide <buff>, /pb show <buff>, /pb hide recast <name>, /pb show recast <name>, /pb list')
+    msg('Commands: /pb (settings window), /pb test (on/off), /pb party (on/off), /pb clear, /pb hide <buff>, /pb show <buff>, /pb hide recast <name>, /pb show recast <name>, /pb list, /pb theme [name]')
 end)
 
 ashita.events.register('unload', 'pb_unload', function ()

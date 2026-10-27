@@ -3,7 +3,7 @@
 An Ashita v4 addon for HorizonXI that shows how much time is left on the buffs **you** cast — on yourself and on others — plus your own ability and spell recasts.
 
 - **Author:** Renavi
-- **Version:** 1.0
+- **Version:** 1.1
 - **Ashita:** v4 (HorizonXI launcher)
 
 > Code written with Claude (AI) at my direction. I tested it in game and maintain it.
@@ -21,7 +21,8 @@ An Ashita v4 addon for HorizonXI that shows how much time is left on the buffs *
 
 **Settings window (`/pb`)**
 - Per-job checkboxes to hide buffs or recasts.
-- Party tab: main on/off switch and a checkbox per person.
+- Party tab: main on/off switch, a checkbox per person, and gear boxes per person (e.g. tick **Dilation Ring** for a RDM so their Haste / Refresh get +30s).
+- Theme tab: themes in groups (Default, Glass, Nations, Dark, Simple), each with sub-themes. Each theme sets colors and a style: timer bars, box headers, borders (none / thin / thick / double), side stripe, lines between groups, spacing, text size and corner roundness. Tweak any of it, then **Save look** to keep it as your own theme (Custom group). Also background opacity and exact box positions.
 - Test mode: fake rows so you can place the windows without casting.
 
 ## How buff times are worked out
@@ -71,6 +72,7 @@ Times on other people are always based on your own casts or your saved/estimated
 | `/pb hide <buff>` / `/pb show <buff>` | Hide / show a buff |
 | `/pb hide recast <name>` / `/pb show recast <name>` | Hide / show a recast |
 | `/pb list` | List what is hidden |
+| `/pb theme` / `/pb theme <name>` | List themes / pick a theme (your saved ones work too) |
 
 Drag the boxes to move them. Their spots are saved.
 
@@ -84,7 +86,7 @@ Drag the boxes to move them. Their spots are saved.
 
 - If a buff is removed early (dispel, death, overwritten by someone else), its timer on other people keeps running until it ends.
 - Times on other people are estimates unless the same buff also landed on you.
-- Gear bonuses on other players cannot be seen.
+- Gear on other players cannot be seen. Tick their gear in the Party tab so their estimates include it.
 
 ## Credits
 
