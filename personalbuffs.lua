@@ -24,7 +24,7 @@
 ----------------------------------------------------------------------
 addon.name    = 'personalbuffs'
 addon.author  = 'Renavi'
-addon.version = '1.1'
+addon.version = '1.1.1'
 addon.desc    = 'Shows time left on buffs you give to yourself and others.'
 addon.link    = 'https://github.com/RenaviOnEden/personalbuffs'
 
@@ -1328,6 +1328,8 @@ local function recast_color(left)
 end
 
 -- Returns { Abilities = list, Spells = list } of { name, left }.
+local SP2_TIMER = 254
+
 local function read_recasts()
     local out = { Abilities = T{}, Spells = T{} }
     local mm  = AshitaCore:GetMemoryManager()
@@ -1339,7 +1341,10 @@ local function read_recasts()
     for x = 0, 31 do
         local id    = rc:GetAbilityTimerId(x)
         local timer = rc:GetAbilityTimer(x)
-        if (id ~= 0 or x == 0) and timer > 0 then
+        -- Timer 254 is the second special ability slot (Brazen Rush etc.), which
+        -- doesn't exist at level 75. The game also puts your 2-hour there, so
+        -- it's skipped to avoid a fake "Brazen Rush" next to your real 2-hour.
+        if (id ~= 0 or x == 0) and id ~= SP2_TIMER and timer > 0 then
             local name
             if x == 0 then
                 name = TWO_HOURS[job] or 'Special'

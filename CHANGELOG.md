@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.1
+- Fix: recast box no longer shows a fake "Brazen Rush" next to your 2-hour.
+
 ## 1.1
 
 **New**
